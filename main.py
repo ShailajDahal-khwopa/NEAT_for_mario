@@ -1,106 +1,111 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import numpy as np
-import pygame
+import os
 import sys
-
+import argparse
+import pickle
+import neat
 import gymnasium as gym
 import gym_super_mario_bros
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 from nes_py.wrappers import JoypadSpace
 
-# Import your custom wrapper here 
-# (Assuming it's in the same file or imported from gymTools)
-from gymTools import MarioGridWrapper 
+# Import your custom modules
+from gymTools import MarioGridWrapper
+from train import Train
 
-# --- Pygame Visual Settings ---
-CELL_SIZE = 40  # Pixel size of each matrix tile on your monitor
-COLS = 16
-ROWS = 13
-SCREEN_WIDTH = COLS * CELL_SIZE
-SCREEN_HEIGHT = ROWS * CELL_SIZE
-
-# Color Palette for the Matrix Values
-COLORS = {
-     0: (100, 149, 237),  # Empty Space -> Cornflower Blue (Sky)
-     1: (139, 69, 19),    # Tiles -> Saddle Brown (Solid blocks/bricks)
-     2: (255, 0, 0),      # Mario -> Red
-    -1: (0, 255, 0)       # Enemies -> Bright Green
-}
-
-def get_action_from_keyboard():
-    """
-    Maps keyboard state to gym-super-mario-bros SIMPLE_MOVEMENT indices:
-    0: NOOP, 1: Right, 2: Right+Jump, 3: Right+Run, 4: Right+Run+Jump, 5: Jump, 6: Left
-    """
-    keys = pygame.key.get_pressed()
+def run_training(generations, parallel, level, config_file):
+    """Launches the parallelized evolutionary training loop"""
+    print(f"\n==================================================")
+    # Corrected timestamp reference logic for standard file creation logs
+    print(f"STARTING NEAT TRAINING FOR MARIO LEVEL {level}")
+    print(f"Generations: {generations} | Parallel Workers: {parallel}")
+    print(f"Configuration File: {config_file}")
+    print(f"==================================================\n")
     
-    if keys[pygame.K_RIGHT] and keys[pygame.K_SPACE]:
-        return 2  # Right + Jump
-    elif keys[pygame.K_RIGHT]:
-        return 1  # Move Right
-    elif keys[pygame.K_LEFT]:
-        return 6  # Move Left
-    elif keys[pygame.K_SPACE]:
-        return 5  # Jump straight up
-    return 0      # Standing still (NOOP)
+    # Initialize your training orchestration engine
+    trainer = Train(generations=generations, parallel=parallel, level=level)
+    trainer.main(config_file=config_file)
 
-def draw_matrix(surface, matrix):
-    """Renders the 13x16 numerical matrix as colored grid squares"""
-    for r in range(ROWS):
-        for c in range(COLS):
-            val = matrix[r, c]
-            color = COLORS.get(val, (255, 255, 255)) # Fallback to white if unknown value
+def play_winner(pickle_path, config_file, level):
+    """Loads a saved genome and renders its gameplay on screen"""
+    if not os.path.exists(pickle_path):
+        print(f"Error: Saved genome file '{pickle_path}' not found!")
+        sys.exit(1)
+        
+    print(f"\nLoading genome from: {pickle_path}...")
+    with open(pickle_path, "rb") as f:
+        genome = pickle.load(f)
+        
+    # Reconstruct the NEAT configuration setup
+    local_dir = os.path.dirname(__file__)
+    config_path = os.path.join(local_dir, config_file)
+    config = neat.Config(neat.DefaultGenome, neat.DefaultReproduction,
+                         neat.DefaultSpeciesSet, neat.DefaultStagnation,
+                         config_path)
+    
+    # Build the network brain from the saved structural data
+    net = neat.nn.FeedForwardNetwork.create(genome, config)
+    
+    # Initialize environment with human rendering mode enabled
+    print(f"Launching visual playback for Level {level}. Press ESC inside the game window to exit.")
+    base_env = gym_super_mario_bros.make(f'SuperMarioBros-{level}-v0', render_mode='human')
+    env = JoypadSpace(base_env, SIMPLE_MOVEMENT)
+    env = MarioGridWrapper(env, flatten=True)
+    
+    # Define macro actions mapping array matching training logic
+    actions_map = [3, 4] 
+    
+    state, info = env.reset()
+    done = False
+    
+    try:
+        while not done:
+            # Process sensory matrix elements through the neural network
+            inputs = state.flatten()
+            output = net.activate(inputs)
             
-            # Draw the block
-            rect = pygame.Rect(c * CELL_SIZE, r * CELL_SIZE, CELL_SIZE, CELL_SIZE)
-            pygame.draw.rect(surface, color, rect)
+            # Select the macro action index with the highest activation node response
+            chosen_action = actions_map[output.index(max(output))]
             
-            # Draw a subtle grid line around the block
-            pygame.draw.rect(surface, (50, 50, 50), rect, 1)
+            state, reward, terminated, truncated, info = env.step(chosen_action)
+            done = terminated or truncated
+            
+            # Capture manual window escapes or closing signals from the emulator frame
+            if env.unwrapped.done: 
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        env.close()
+        print("Playback closed.")
 
 def main():
-    # 1. Initialize Gymnasium Environment with your Wrapper
-    base_env = gym_super_mario_bros.make('SuperMarioBros-v0', render_mode='rgb_array')
-    env = JoypadSpace(base_env, SIMPLE_MOVEMENT)
-    env = MarioGridWrapper(env)
+    parser = argparse.ArgumentParser(description="NEAT Super Mario Bros Project Orchestrator")
     
-    # 2. Initialize Pygame Window
-    pygame.init()
-    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-    pygame.display.set_caption("Mario Matrix Viewport (Human Playable)")
-    clock = pygame.time.Clock()
+    # Core operational mode switch
+    parser.add_argument('mode', choices=['train', 'play'], 
+                        help="Choose 'train' to evolve networks, or 'play' to view an evolved network.")
     
-    # Reset Environment
-    obs, info = env.reset()
-    
-    running = True
-    while running:
-        # Limit frame rate to 30 FPS so it's playable by humans
-        clock.tick(30) 
-        
-        # Handle Window Close Exits
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                running = False
+    # Configuration parameter adjustments
+    parser.add_argument('--config', type=str, default='config', 
+                        help="Path to the NEAT configuration file (default: 'config')")
+    parser.add_argument('--gen', type=int, default=1000, 
+                        help="Number of generations to execute during training (default: 1000)")
+    parser.add_argument('--cores', type=int, default=4, 
+                        help="Number of parallel CPU worker processes for training (default: 4)")
+    parser.add_argument('--level', type=str, default='1-1', 
+                        help="The Mario level to load, e.g., '1-1', '1-2' (default: '1-1')")
+    parser.add_argument('--file', type=str, default='winner.pkl', 
+                        help="The saved pickle filename to evaluate during 'play' mode (default: 'winner.pkl')")
 
-        # 3. Get Human Input and Step the Environment
-        action = get_action_from_keyboard()
-        obs, reward, terminated, truncated, info = env.step(action)
-        
-        if terminated or truncated:
-            obs, info = env.reset()
+    args = parser.parse_args()
 
-        # 4. Render the 13x16 wrapped matrix onto the Pygame window
-        draw_matrix(screen, obs)
-        pygame.display.flip()
+    if args.mode == 'train':
+        run_training(generations=args.gen, parallel=args.cores, level=args.level, config_file=args.config)
+    elif args.mode == 'play':
+        play_winner(pickle_path=args.file, config_file=args.config, level=args.level)
 
-    env.close()
-    pygame.quit()
-    sys.exit()
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

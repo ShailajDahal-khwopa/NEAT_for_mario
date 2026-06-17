@@ -5,6 +5,7 @@ import os
 import sys
 import argparse
 import pickle
+import time
 import neat
 import gymnasium as gym
 import gym_super_mario_bros
@@ -32,6 +33,9 @@ def run_training(generations, parallel, level, config_file):
 
 def play_winner(pickle_path, config_file, level):
     """Loads a saved genome and renders its gameplay on screen"""
+    target_fps = 30
+    frame_delay = 1.0 / target_fps
+
     if not os.path.exists(pickle_path):
         print(f"Error: Saved genome file '{pickle_path}' not found!")
         sys.exit(1)
@@ -65,7 +69,7 @@ def play_winner(pickle_path, config_file, level):
     env = MarioGridWrapper(env, flatten=True)
 
     # Define macro actions mapping array matching training logic
-    actions_map = [3, 4]
+    actions_map = [1, 3, 4]
 
     state, _info = env.reset()  # FIX: Prefixed unused info
     done = False
@@ -84,8 +88,9 @@ def play_winner(pickle_path, config_file, level):
             )  # FIX: Prefixed unused assets
             done = terminated or truncated
 
-            # Optional: Add a small sleep cap here if playback spins way too fast for your monitor
-            # time.sleep(0.016)
+            # Render the frame
+            env.unwrapped.render()
+            time.sleep(frame_delay)
 
     except KeyboardInterrupt:
         pass

@@ -18,7 +18,9 @@ gym.logger.min_level = 40
 
 class Train:
     def __init__(self, generations, parallel=2, level="1-1"):
-        self.actions = [3, 4]
+        # Use a small forward-focused action set with explicit jump choices.
+        # SIMPLE_MOVEMENT indices: 1=right, 3=right+B, 4=right+A+B
+        self.actions = [1, 3, 4]
         self.generations = generations
         self.lock = mp.Lock()
         self.par = parallel
@@ -65,7 +67,7 @@ class Train:
         env.close()
 
     def _fitness_func(self, genome, config, o):
-        base_env = gym_super_mario_bros.make(f'SuperMarioBros-1-1-v0', render_mode=None)
+        base_env = gym_super_mario_bros.make(f'SuperMarioBros-{self.level}-v0', render_mode=None)
         env = JoypadSpace(base_env, SIMPLE_MOVEMENT)
         env = MarioGridWrapper(env, flatten=True)
         
@@ -73,8 +75,9 @@ class Train:
             state, info = env.reset()
             net = neat.nn.FeedForwardNetwork.create(genome, config)
             done = False
-            i = 0
-            old = 40
+            stagnant_frames = 0
+            max_stagnant_frames = 150
+            old_x = info['x_pos']
             
             while not done:
                 state = state.flatten()
@@ -83,13 +86,16 @@ class Train:
                 
                 state, reward, terminated, truncated, info = env.step(output)
                 done = terminated or truncated
-                
-                i += 1
-                if i % 50 == 0:
-                    if old == info['x_pos']:
-                        break
-                    else:
-                        old = info['x_pos']
+
+                if info['x_pos'] > old_x:
+                    old_x = info['x_pos']
+                    stagnant_frames = 0
+                else:
+                    stagnant_frames += 1
+
+                # End hopeless runs, but give enough time to discover jump timing.
+                if stagnant_frames >= max_stagnant_frames:
+                    break
 
             fitness = -1 if info['x_pos'] <= 40 else info['x_pos']
             
